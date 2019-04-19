@@ -15,3 +15,6 @@ On a windows machine:
 `reddit-wallpaper-downloader day %HOMEPATH$\Pictures\Wallpapers\`
 
 This will download the wallpapers for the top posts of the day to %HOMEPATH$\Pictures\Wallpapers\. Each file will take the name of the title of the post. If the file already exists, it will skip downloading that wallpaper.
+
+# Todo
+* If link is an album collection, download full album
