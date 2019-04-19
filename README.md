@@ -8,7 +8,7 @@ First GoLang project to get a feel for the language. This will get the top posts
 * Clone the repo
 * cd into the cloned repo
 * type: `$ go install`
-* type: `reddit-wallpaper-downloader [day | week | month | year | all] [path to download]`
+* type: `$ reddit-wallpaper-downloader [day | week | month | year | all] [path to download]`
 
 # Example
 On a windows machine:
