@@ -1,42 +1,56 @@
-package main
+package cmd
 
 import (
-	"fmt"
-	"os"
-	"io/ioutil"
-	"io"
-	"net/http"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/ioutil"
+	"net/http"
+	"os"
 	"strings"
+
+	"github.com/shayd3/reddit-image-scraper/models"
+	"github.com/spf13/cobra"
+)
+var (
+	REDDIT_URL string = "https://www.reddit.com/r"
+	WALLPAPER_SUBREDDIT string = "wallpaper"
+
+	TOP_PERIOD string = "week"
+	SUBREDDIT string = "wallpapers"
+
 )
 
-var REDDIT_URL string = "https://www.reddit.com"
-var REDDIT_BASE_API string = "/api"
-var WALLPAPER_SUBREDDIT string = "/r/wallpaper"
-
-// Response struct
-type Response struct {
-	Data struct {
-		Post []Post `json:"children"`
-	}`json:"data"`
+// downloadCmd represents the download command
+var downloadCmd = &cobra.Command{
+	Use:   "download",
+	Short: "Download images from a specified subreddit",
+	Long: `download - will download all images from the specific subreddit.
+	Default: TOP_PERIOD=week, SUBREDDIT=wallpapers`,
+	Args: func(cmd *cobra.Command, args []string) error {
+		if len(args) < 2 {
+			return errors.New("requires 2 args. ")
+		}
+		return nil
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("Args: " + strings.Join(args, " "))
+		topPeriod := args[0]
+		subreddit := args[1]
+		getTopWallpapers(topPeriod, subreddit)
+	},
 }
 
-// Post struct
-type Post struct {
-	Data struct {
-		Title string `json:"title"`
-		Url string `json:"url"`
-	}`json:"data"`
+func init() {
+	rootCmd.AddCommand(downloadCmd)
 }
 
-func main() {
-	getTopWallpapers(os.Args[1], os.Args[2])
-}
 
 // timesort = [day | week | month | year | all]
 // location = Path to save images
 func getTopWallpapers(timesort string, location string) {
-	url := REDDIT_URL + WALLPAPER_SUBREDDIT + "/top.json?t=" + timesort
+	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, location, timesort)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
     if err != nil {
         panic(err)
@@ -55,7 +69,7 @@ func getTopWallpapers(timesort string, location string) {
     if err != nil {
         panic(err)
 	}
-	var responseObject Response
+	var responseObject models.Response
 	json.Unmarshal(body, &responseObject)
 
 	
