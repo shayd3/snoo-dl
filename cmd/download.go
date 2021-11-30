@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/shayd3/reddit-image-scraper/models"
@@ -15,9 +16,11 @@ import (
 )
 var (
 	REDDIT_URL string = "https://www.reddit.com/r"
-	WALLPAPER_SUBREDDIT string = "wallpaper"
+	VALID_TOP_PERIODS string = "day|week|month|year|all"
 
-	TOP_PERIOD string = "week"
+
+	DEFAULT_TOP_PERIOD string = "week"
+	TOP_PERIOD string = DEFAULT_TOP_PERIOD
 	SUBREDDIT string = "wallpapers"
 
 )
@@ -29,16 +32,27 @@ var downloadCmd = &cobra.Command{
 	Long: `download - will download all images from the specific subreddit.
 	Default: TOP_PERIOD=week, SUBREDDIT=wallpapers`,
 	Args: func(cmd *cobra.Command, args []string) error {
-		if len(args) < 2 {
-			return errors.New("requires 2 args. ")
+		if len(args) > 2 || len(args) == 0 {
+			return errors.New("Invalid arguments.\nUsage: reddit-image-scraper download {SUBREDDIT} [day|week(default)|month|year|all]")
 		}
+		// Check if both arguments are provided
+		if len(args) == 2 {
+			var re = regexp.MustCompile(VALID_TOP_PERIODS)
+			if(!re.MatchString(args[1])) {
+				return errors.New(fmt.Sprintf("provided TOP_PERIOD was invalid. Valid periods are: %s", VALID_TOP_PERIODS))
+			}
+		}
+		
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("Args: " + strings.Join(args, " "))
-		topPeriod := args[0]
-		subreddit := args[1]
-		getTopWallpapers(topPeriod, subreddit)
+		SUBREDDIT = args[0]
+		if(len(args) == 2) {
+			TOP_PERIOD = args[1]
+		}
+		
+		getTopWallpapers(TOP_PERIOD, SUBREDDIT)
 	},
 }
 

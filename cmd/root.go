@@ -14,7 +14,7 @@ var cfgFile string
 // rootCmd represents the base command when called without any subcommands. 
 // will print out the 'help' section
 var rootCmd = &cobra.Command{
-	Use:   "ris",
+	Use:   "reddit-image-scraper",
 	Short: "reddit-image-scraper (ris) grabs all images from a subreddit and downloads them!",
 	Long: `Reddit-image-scraper (ris) is a CLI library that grabs all images from a
 	specified subreddit and downloads them to a specified location.`,
