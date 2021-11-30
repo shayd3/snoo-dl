@@ -20,6 +20,7 @@ var (
 
 
 	DEFAULT_TOP_PERIOD string = "week"
+	DEFAULT_LOCATION string = "./"
 	TOP_PERIOD string = DEFAULT_TOP_PERIOD
 	SUBREDDIT string = "wallpapers"
 
@@ -27,13 +28,13 @@ var (
 
 // downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
-	Use:   "download",
+	Use:   "download {SUBREDDIT} [day|week(default)|month|year|all]",
 	Short: "Download images from a specified subreddit",
 	Long: `download - will download all images from the specific subreddit.
 	Default: TOP_PERIOD=week, SUBREDDIT=wallpapers`,
 	Args: func(cmd *cobra.Command, args []string) error {
 		if len(args) > 2 || len(args) == 0 {
-			return errors.New("Invalid arguments.\nUsage: reddit-image-scraper download {SUBREDDIT} [day|week(default)|month|year|all]")
+			return errors.New("invalid arguments")
 		}
 		// Check if both arguments are provided
 		if len(args) == 2 {
@@ -46,25 +47,33 @@ var downloadCmd = &cobra.Command{
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("Args: " + strings.Join(args, " "))
 		SUBREDDIT = args[0]
 		if(len(args) == 2) {
 			TOP_PERIOD = args[1]
 		}
+		location, _ := cmd.Flags().GetString("location")
+		if(location != "") {
+			getTopWallpapers(SUBREDDIT, TOP_PERIOD, location)
+		} else {
+			getTopWallpapers(SUBREDDIT, TOP_PERIOD, DEFAULT_LOCATION)
+		}
 		
-		getTopWallpapers(TOP_PERIOD, SUBREDDIT)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
+	//downloadCmd.LocalFlags().AddFlag(&pflag.Flag{Name: "location", Shorthand: "l", Usage: "location to download scrapped images"})
+	//.String("location", "", "location to download scrapped images")
+	downloadCmd.Flags().StringP("location", "l", DEFAULT_LOCATION, "location to download scrapped images")
+
 }
 
 
 // timesort = [day | week | month | year | all]
 // location = Path to save images
-func getTopWallpapers(timesort string, location string) {
-	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, location, timesort)
+func getTopWallpapers(subreddit string, timesort string, location string) {
+	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, subreddit, timesort)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
     if err != nil {
         panic(err)
@@ -85,11 +94,13 @@ func getTopWallpapers(timesort string, location string) {
 	}
 	var responseObject models.Response
 	json.Unmarshal(body, &responseObject)
+	var posts = responseObject.Data.Post
 
-	
-	for i := 0; i < len(responseObject.Data.Post); i++ {
-		fmt.Println(responseObject.Data.Post[i].Data.Title + " => " + responseObject.Data.Post[i].Data.Url)
-		downloadFromUrl(responseObject.Data.Post[i].Data.Url, responseObject.Data.Post[i].Data.Title, location)
+	for _, post := range posts {
+		var title = post.Data.Title
+		var url =  post.Data.Url
+		fmt.Println(title + " => " + url)
+		downloadFromUrl(url, title, location)
 	}
 }
 
@@ -97,10 +108,20 @@ func downloadFromUrl(url string, title string, location string) {
 	tokens := strings.Split(url, ".")
 	fileName := title + "." + tokens[len(tokens)-1]
 	fmt.Println("Downloading", url, "to", fileName)
+	
+	// add trailing slash if doesn't already exist
+	if(location[len(location)-1:] != "/") {
+		location = location + "/"
+	}
+	
+	// create directory location if doesn't exist
+	err := os.MkdirAll(location, os.ModePerm)
+	if err != nil {
+		panic(err)
+	}
 
 	// check if file exists
 	if _, err := os.Stat(location + fileName); os.IsNotExist(err) {	
-
 		// Create file
 		output, err := os.Create(location + fileName)
 		if err != nil {
