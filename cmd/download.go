@@ -63,10 +63,7 @@ var downloadCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
-	//downloadCmd.LocalFlags().AddFlag(&pflag.Flag{Name: "location", Shorthand: "l", Usage: "location to download scrapped images"})
-	//.String("location", "", "location to download scrapped images")
 	downloadCmd.Flags().StringP("location", "l", DEFAULT_LOCATION, "location to download scrapped images")
-
 }
 
 
