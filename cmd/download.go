@@ -117,6 +117,14 @@ func downloadFromUrl(url string, title string, location string) {
 		panic(err)
 	}
 
+	// Get bytes
+	response, err := http.Get(url)
+	if err != nil {
+		fmt.Println("Error while downloading", url, "-", err)
+		return
+	}
+	defer response.Body.Close()
+	
 	// check if file exists
 	if _, err := os.Stat(location + fileName); os.IsNotExist(err) {	
 		// Create file
@@ -126,14 +134,6 @@ func downloadFromUrl(url string, title string, location string) {
 			return
 		}
 		defer output.Close()
-
-		// Get bytes
-		response, err := http.Get(url)
-		if err != nil {
-			fmt.Println("Error while downloading", url, "-", err)
-			return
-		}
-		defer response.Body.Close()
 
 		// Copy to file
 		n, err := io.Copy(output, response.Body)
