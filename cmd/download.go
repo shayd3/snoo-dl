@@ -40,7 +40,7 @@ var downloadCmd = &cobra.Command{
 		if len(args) == 2 {
 			var re = regexp.MustCompile(VALID_TOP_PERIODS)
 			if(!re.MatchString(args[1])) {
-				return errors.New(fmt.Sprintf("provided TOP_PERIOD was invalid. Valid periods are: %s", VALID_TOP_PERIODS))
+				return fmt.Errorf("provided TOP_PERIOD was invalid. Valid periods are: %s", VALID_TOP_PERIODS)
 			}
 		}
 		
