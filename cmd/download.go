@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/shayd3/reddit-image-scraper/models"
@@ -21,6 +22,7 @@ var (
 
 	DEFAULT_TOP_PERIOD string = "week"
 	DEFAULT_LOCATION string = "./"
+	DEFAULT_RESOLUTION_FILTER string = ""
 	TOP_PERIOD string = DEFAULT_TOP_PERIOD
 	SUBREDDIT string = "wallpapers"
 
@@ -48,14 +50,20 @@ var downloadCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		SUBREDDIT = args[0]
+
 		if(len(args) == 2) {
 			TOP_PERIOD = args[1]
 		}
+
 		location, _ := cmd.Flags().GetString("location")
+		resolution, _ := cmd.Flags().GetString("resolution")
+		aspectRatio, _ := cmd.Flags().GetString("aspect-ratio")
+		filter := parseFilters(resolution, aspectRatio)
+
 		if(location != "") {
-			getTopWallpapers(SUBREDDIT, TOP_PERIOD, location)
+			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, location)
 		} else {
-			getTopWallpapers(SUBREDDIT, TOP_PERIOD, DEFAULT_LOCATION)
+			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, DEFAULT_LOCATION)
 		}
 		
 	},
@@ -64,12 +72,47 @@ var downloadCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(downloadCmd)
 	downloadCmd.Flags().StringP("location", "l", DEFAULT_LOCATION, "location to download scrapped images")
+	downloadCmd.Flags().StringP("resolution", "r", "", "only download images with specified resolution (i.e. 1920x1080)")
+	downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
 }
 
+func parseFilters(resolution string, aspectRatio string) models.Filter {
+	filter := models.Filter{}
+	if resolution != "" {
+		resolution = strings.ReplaceAll(resolution, " ", "")
+		resolutionDimensions := strings.Split(resolution, "x")
+		width, err := strconv.Atoi(resolutionDimensions[0])
+		if err != nil {
+			panic(err)
+		}
+		height, err := strconv.Atoi(resolutionDimensions[1])
+		if err != nil {
+			panic(err)
+		}
+		filter.ResolutionWidth = width
+		filter.ResolutionHeight = height
+	}
+
+	if aspectRatio != "" {
+		aspectRatio = strings.ReplaceAll(aspectRatio, " ", "")
+		aspectRatioVals := strings.Split(aspectRatio, ":")
+		width, err := strconv.Atoi(aspectRatioVals[0])
+		if err != nil {
+			panic(err)
+		}
+		height, err := strconv.Atoi(aspectRatioVals[1])
+		if err != nil {
+			panic(err)
+		}
+		filter.AspectRatioWidth = width
+		filter.AspectRatioHeight = height
+	}
+	return filter
+}
 
 // timesort = [day | week | month | year | all]
 // location = Path to save images
-func getTopWallpapers(subreddit string, timesort string, location string) {
+func getTopWallpapers(subreddit string, timesort string, filter models.Filter, location string) {
 	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, subreddit, timesort)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
     if err != nil {
@@ -94,10 +137,24 @@ func getTopWallpapers(subreddit string, timesort string, location string) {
 	var posts = responseObject.Data.Post
 
 	for _, post := range posts {
+		canDownload := true
 		var title = post.Data.Title
 		var url =  post.Data.Url
-		fmt.Println(title + " => " + url)
-		downloadFromUrl(url, title, location)
+
+		// Check if filter object is empty
+		if (models.Filter{}) != filter {
+			canDownload = false
+			// TODO - If post is a Reddit Gallary, Images will be empty. Need to account for this
+			if len(post.Data.Preview.Images) != 0 {
+				if post.Data.Preview.Images[0].Source.Height == filter.ResolutionHeight && post.Data.Preview.Images[0].Source.Width == filter.ResolutionWidth {
+					canDownload = true
+				}
+			} 
+		}
+		if canDownload {
+			fmt.Println(title + " => " + url)
+			downloadFromUrl(url, title, location)
+		}
 	}
 }
 
