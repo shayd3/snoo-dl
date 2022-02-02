@@ -137,10 +137,24 @@ func getTopWallpapers(subreddit string, timesort string, filter models.Filter, l
 	var posts = responseObject.Data.Post
 
 	for _, post := range posts {
+		canDownload := true
 		var title = post.Data.Title
 		var url =  post.Data.Url
-		fmt.Println(title + " => " + url)
-		downloadFromUrl(url, title, location)
+
+		// Check if filter object is empty
+		if (models.Filter{}) != filter {
+			canDownload = false
+			// TODO - If post is a Reddit Gallary, Images will be empty. Need to account for this
+			if len(post.Data.Preview.Images) != 0 {
+				if post.Data.Preview.Images[0].Source.Height == filter.ResolutionHeight && post.Data.Preview.Images[0].Source.Width == filter.ResolutionWidth {
+					canDownload = true
+				}
+			} 
+		}
+		if canDownload {
+			fmt.Println(title + " => " + url)
+			downloadFromUrl(url, title, location)
+		}
 	}
 }
 

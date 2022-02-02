@@ -8,9 +8,9 @@ type Post struct {
 		Preview struct {
 			Images  []struct {
 				Source struct {
-					Height int64  `json:"height"`
+					Height int  `json:"height"`
 					URL    string `json:"url"`
-					Width  int64  `json:"width"`
+					Width  int  `json:"width"`
 				} `json:"source"`
 			} `json:"images"`
 		} `json:"preview"`
