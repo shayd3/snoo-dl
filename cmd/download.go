@@ -73,7 +73,7 @@ func init() {
 	rootCmd.AddCommand(downloadCmd)
 	downloadCmd.Flags().StringP("location", "l", DEFAULT_LOCATION, "location to download scrapped images")
 	downloadCmd.Flags().StringP("resolution", "r", "", "only download images with specified resolution (i.e. 1920x1080)")
-	downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
+	// downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
 }
 
 func parseFilters(resolution string, aspectRatio string) models.Filter {
