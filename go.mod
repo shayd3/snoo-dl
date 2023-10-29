@@ -1,4 +1,4 @@
-module github.com/shayd3/reddit-image-scraper
+module github.com/shayd3/snoo-dl
 
 go 1.16
 

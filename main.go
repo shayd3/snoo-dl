@@ -1,6 +1,6 @@
 package main
 
-import "github.com/shayd3/reddit-image-scraper/cmd"
+import "github.com/shayd3/snoo-dl/cmd"
 
 func main() {
 	cmd.Execute()

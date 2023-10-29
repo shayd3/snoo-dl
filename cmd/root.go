@@ -11,12 +11,12 @@ import (
 
 var cfgFile string
 
-// rootCmd represents the base command when called without any subcommands. 
+// rootCmd represents the base command when called without any subcommands.
 // will print out the 'help' section
 var rootCmd = &cobra.Command{
-	Use:   "reddit-image-scraper",
-	Short: "reddit-image-scraper (ris) grabs all images from a subreddit and downloads them!",
-	Long: `Reddit-image-scraper (ris) is a CLI library that grabs all images from a
+	Use:   "snoo-dl",
+	Short: "Snoo-dl grabs all images from a subreddit and downloads them!",
+	Long: `Snoo-dl is a CLI library that grabs all images from a
 	specified subreddit and downloads them to a specified location.`,
 }
 
@@ -32,7 +32,7 @@ func init() {
 	// Cobra supports persistent flags, which, if defined here,
 	// will be global for your application.
 
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.ris.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.snoodl.yaml)")
 
 	// Cobra also supports local flags, which will only run
 	// when this action is called directly.
@@ -52,7 +52,7 @@ func initConfig() {
 		// Search config in home directory with name ".ris" (without extension).
 		viper.AddConfigPath(home)
 		viper.SetConfigType("yaml")
-		viper.SetConfigName(".ris")
+		viper.SetConfigName(".snoodl")
 	}
 
 	viper.AutomaticEnv() // read in environment variables that match

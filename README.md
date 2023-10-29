@@ -9,7 +9,7 @@ Scrape all images from any subreddit!
 * Clone the repo
 * cd into the cloned repo
 * type: `$ go install`
-* type: `$ reddit-image-scraper help`
+* type: `$ snoo-dl help`
 
 # Deploying
 There is a github actions workflow located at `.github/workflows/release_build.yml`. This uses `goreleaser` to build

@@ -12,20 +12,19 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/shayd3/reddit-image-scraper/models"
+	"github.com/shayd3/snoo-dl/models"
 	"github.com/spf13/cobra"
 )
+
 var (
-	REDDIT_URL string = "https://www.reddit.com/r"
+	REDDIT_URL        string = "https://www.reddit.com/r"
 	VALID_TOP_PERIODS string = "day|week|month|year|all"
 
-
-	DEFAULT_TOP_PERIOD string = "week"
-	DEFAULT_LOCATION string = "./"
+	DEFAULT_TOP_PERIOD        string = "week"
+	DEFAULT_LOCATION          string = "./"
 	DEFAULT_RESOLUTION_FILTER string = ""
-	TOP_PERIOD string = DEFAULT_TOP_PERIOD
-	SUBREDDIT string = "wallpapers"
-
+	TOP_PERIOD                string = DEFAULT_TOP_PERIOD
+	SUBREDDIT                 string = "wallpapers"
 )
 
 // downloadCmd represents the download command
@@ -41,17 +40,17 @@ var downloadCmd = &cobra.Command{
 		// Check if both arguments are provided
 		if len(args) == 2 {
 			var re = regexp.MustCompile(VALID_TOP_PERIODS)
-			if(!re.MatchString(args[1])) {
+			if !re.MatchString(args[1]) {
 				return fmt.Errorf("provided TOP_PERIOD was invalid. Valid periods are: %s", VALID_TOP_PERIODS)
 			}
 		}
-		
+
 		return nil
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		SUBREDDIT = args[0]
 
-		if(len(args) == 2) {
+		if len(args) == 2 {
 			TOP_PERIOD = args[1]
 		}
 
@@ -60,12 +59,12 @@ var downloadCmd = &cobra.Command{
 		aspectRatio, _ := cmd.Flags().GetString("aspect-ratio")
 		filter := parseFilters(resolution, aspectRatio)
 
-		if(location != "") {
+		if location != "" {
 			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, location)
 		} else {
 			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, DEFAULT_LOCATION)
 		}
-		
+
 	},
 }
 
@@ -115,22 +114,22 @@ func parseFilters(resolution string, aspectRatio string) models.Filter {
 func getTopWallpapers(subreddit string, timesort string, filter models.Filter, location string) {
 	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, subreddit, timesort)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
-    if err != nil {
-        panic(err)
+	if err != nil {
+		panic(err)
 	}
-	
+
 	req.Header.Set("User-agent", "wallpaper-downloader 0.1")
 
 	client := http.DefaultClient
-    resp, err := client.Do(req)
-    if err != nil {
-        panic(err)
+	resp, err := client.Do(req)
+	if err != nil {
+		panic(err)
 	}
-	
+
 	defer resp.Body.Close()
-    body, err := ioutil.ReadAll(resp.Body)
-    if err != nil {
-        panic(err)
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		panic(err)
 	}
 	var responseObject models.Response
 	json.Unmarshal(body, &responseObject)
@@ -139,7 +138,7 @@ func getTopWallpapers(subreddit string, timesort string, filter models.Filter, l
 	for _, post := range posts {
 		canDownload := true
 		var title = post.Data.Title
-		var url =  post.Data.Url
+		var url = post.Data.Url
 
 		// Check if filter object is empty
 		if (models.Filter{}) != filter {
@@ -149,7 +148,7 @@ func getTopWallpapers(subreddit string, timesort string, filter models.Filter, l
 				if post.Data.Preview.Images[0].Source.Height == filter.ResolutionHeight && post.Data.Preview.Images[0].Source.Width == filter.ResolutionWidth {
 					canDownload = true
 				}
-			} 
+			}
 		}
 		if canDownload {
 			fmt.Println(title + " => " + url)
@@ -162,12 +161,12 @@ func downloadFromUrl(url string, title string, location string) {
 	tokens := strings.Split(url, ".")
 	fileName := title + "." + tokens[len(tokens)-1]
 	fmt.Println("Downloading", url, "to", fileName)
-	
+
 	// add trailing slash if doesn't already exist
-	if(location[len(location)-1:] != "/") {
+	if location[len(location)-1:] != "/" {
 		location = location + "/"
 	}
-	
+
 	// create directory location if doesn't exist
 	err := os.MkdirAll(location, os.ModePerm)
 	if err != nil {
@@ -181,9 +180,9 @@ func downloadFromUrl(url string, title string, location string) {
 		return
 	}
 	defer response.Body.Close()
-	
+
 	// check if file exists
-	if _, err := os.Stat(location + fileName); os.IsNotExist(err) {	
+	if _, err := os.Stat(location + fileName); os.IsNotExist(err) {
 		// Create file
 		output, err := os.Create(location + fileName)
 		if err != nil {
