@@ -19,3 +19,4 @@ and deploy the golang application. To run the release, just push up a new tag!
 `git push --tags`
 
 The action should run and create a new release with all of the related artifacts associated.
+hi
