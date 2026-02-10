@@ -13,3 +13,8 @@
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+
+# Local Go build caches used in restricted/sandboxed environments
+.gocache/
+.gomodcache/
+.gopath/

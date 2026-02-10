@@ -4,5 +4,5 @@ package models
 type Response struct {
 	Data struct {
 		Post []Post `json:"children"`
-	}`json:"data"`
+	} `json:"data"`
 }
