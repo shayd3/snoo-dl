@@ -5,26 +5,45 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
-	"regexp"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
+	"unicode"
 
 	"github.com/shayd3/snoo-dl/models"
 	"github.com/spf13/cobra"
 )
 
 var (
-	REDDIT_URL        string = "https://www.reddit.com/r"
-	VALID_TOP_PERIODS string = "day|week|month|year|all"
+	redditURL = "https://www.reddit.com/r"
 
-	DEFAULT_TOP_PERIOD        string = "week"
-	DEFAULT_LOCATION          string = "./"
-	DEFAULT_RESOLUTION_FILTER string = ""
-	TOP_PERIOD                string = DEFAULT_TOP_PERIOD
-	SUBREDDIT                 string = "wallpapers"
+	defaultTopPeriod = "week"
+	defaultLocation  = "./"
+
+	httpClient = &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	validTopPeriods = map[string]struct{}{
+		"day":   {},
+		"week":  {},
+		"month": {},
+		"year":  {},
+		"all":   {},
+	}
+
+	supportedImageExtensions = map[string]struct{}{
+		".jpg":  {},
+		".jpeg": {},
+		".png":  {},
+		".webp": {},
+		".gif":  {},
+	}
 )
 
 // downloadCmd represents the download command
@@ -33,170 +52,250 @@ var downloadCmd = &cobra.Command{
 	Short: "Download images from a specified subreddit",
 	Long: `download - will download all images from the specific subreddit.
 	Default: TOP_PERIOD=week, SUBREDDIT=wallpapers`,
-	Args: func(cmd *cobra.Command, args []string) error {
+	Args: func(_ *cobra.Command, args []string) error {
 		if len(args) > 2 || len(args) == 0 {
 			return errors.New("invalid arguments")
 		}
-		// Check if both arguments are provided
+
 		if len(args) == 2 {
-			var re = regexp.MustCompile(VALID_TOP_PERIODS)
-			if !re.MatchString(args[1]) {
-				return fmt.Errorf("provided TOP_PERIOD was invalid. Valid periods are: %s", VALID_TOP_PERIODS)
+			if !isValidTopPeriod(args[1]) {
+				return errors.New("provided TOP_PERIOD was invalid. Valid periods are: day|week|month|year|all")
 			}
 		}
 
 		return nil
 	},
-	Run: func(cmd *cobra.Command, args []string) {
-		SUBREDDIT = args[0]
-
+	RunE: func(cmd *cobra.Command, args []string) error {
+		subreddit := args[0]
+		topPeriod := defaultTopPeriod
 		if len(args) == 2 {
-			TOP_PERIOD = args[1]
+			topPeriod = strings.ToLower(args[1])
 		}
 
 		location, _ := cmd.Flags().GetString("location")
 		resolution, _ := cmd.Flags().GetString("resolution")
 		aspectRatio, _ := cmd.Flags().GetString("aspect-ratio")
-		filter := parseFilters(resolution, aspectRatio)
-
-		if location != "" {
-			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, location)
-		} else {
-			getTopWallpapers(SUBREDDIT, TOP_PERIOD, filter, DEFAULT_LOCATION)
+		filter, err := parseFilters(resolution, aspectRatio)
+		if err != nil {
+			return err
 		}
 
+		if location != "" {
+			return getTopWallpapers(subreddit, topPeriod, filter, location)
+		}
+
+		return getTopWallpapers(subreddit, topPeriod, filter, defaultLocation)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
-	downloadCmd.Flags().StringP("location", "l", DEFAULT_LOCATION, "location to download scrapped images")
+	downloadCmd.Flags().StringP("location", "l", defaultLocation, "location to download scraped images")
 	downloadCmd.Flags().StringP("resolution", "r", "", "only download images with specified resolution (i.e. 1920x1080)")
-	// downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
+	downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
 }
 
-func parseFilters(resolution string, aspectRatio string) models.Filter {
+func parseFilters(resolution string, aspectRatio string) (models.Filter, error) {
 	filter := models.Filter{}
 	if resolution != "" {
-		resolution = strings.ReplaceAll(resolution, " ", "")
-		resolutionDimensions := strings.Split(resolution, "x")
-		width, err := strconv.Atoi(resolutionDimensions[0])
+		width, height, err := parsePairValue(resolution, "x", "resolution")
 		if err != nil {
-			panic(err)
-		}
-		height, err := strconv.Atoi(resolutionDimensions[1])
-		if err != nil {
-			panic(err)
+			return filter, err
 		}
 		filter.ResolutionWidth = width
 		filter.ResolutionHeight = height
 	}
 
 	if aspectRatio != "" {
-		aspectRatio = strings.ReplaceAll(aspectRatio, " ", "")
-		aspectRatioVals := strings.Split(aspectRatio, ":")
-		width, err := strconv.Atoi(aspectRatioVals[0])
+		width, height, err := parsePairValue(aspectRatio, ":", "aspect-ratio")
 		if err != nil {
-			panic(err)
-		}
-		height, err := strconv.Atoi(aspectRatioVals[1])
-		if err != nil {
-			panic(err)
+			return filter, err
 		}
 		filter.AspectRatioWidth = width
 		filter.AspectRatioHeight = height
 	}
-	return filter
+
+	return filter, nil
 }
 
 // timesort = [day | week | month | year | all]
 // location = Path to save images
-func getTopWallpapers(subreddit string, timesort string, filter models.Filter, location string) {
-	url := fmt.Sprintf("%s/%s/top.json?t=%s", REDDIT_URL, subreddit, timesort)
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func getTopWallpapers(subreddit string, timesort string, filter models.Filter, location string) error {
+	requestURL := fmt.Sprintf("%s/%s/top.json?t=%s", redditURL, subreddit, timesort)
+	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
 	if err != nil {
-		panic(err)
+		return err
 	}
 
-	req.Header.Set("User-agent", "wallpaper-downloader 0.1")
+	req.Header.Set("User-agent", "snoo-dl/0.1")
 
-	client := http.DefaultClient
-	resp, err := client.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		panic(err)
+		return err
 	}
-
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		panic(err)
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("reddit request failed with status %s", resp.Status)
 	}
+
 	var responseObject models.Response
-	json.Unmarshal(body, &responseObject)
-	var posts = responseObject.Data.Post
+	if err := json.NewDecoder(resp.Body).Decode(&responseObject); err != nil {
+		return err
+	}
+
+	posts := responseObject.Data.Post
 
 	for _, post := range posts {
 		canDownload := true
-		var title = post.Data.Title
-		var url = post.Data.Url
+		title := post.Data.Title
+		postURL := post.Data.Url
 
-		// Check if filter object is empty
 		if (models.Filter{}) != filter {
 			canDownload = false
-			// TODO - If post is a Reddit Gallary, Images will be empty. Need to account for this
 			if len(post.Data.Preview.Images) != 0 {
-				if post.Data.Preview.Images[0].Source.Height == filter.ResolutionHeight && post.Data.Preview.Images[0].Source.Width == filter.ResolutionWidth {
+				width := post.Data.Preview.Images[0].Source.Width
+				height := post.Data.Preview.Images[0].Source.Height
+
+				hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
+				hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
+
+				resolutionMatch := !hasResolutionFilter || (height == filter.ResolutionHeight && width == filter.ResolutionWidth)
+				aspectRatioMatch := !hasAspectRatioFilter || (width*filter.AspectRatioHeight == height*filter.AspectRatioWidth)
+
+				if resolutionMatch && aspectRatioMatch {
 					canDownload = true
 				}
 			}
 		}
-		if canDownload {
-			fmt.Println(title + " => " + url)
-			downloadFromUrl(url, title, location)
+
+		if !canDownload || !hasSupportedImageExtension(postURL) {
+			continue
+		}
+
+		fmt.Println(title + " => " + postURL)
+		if err := downloadFromURL(postURL, title, location); err != nil {
+			fmt.Println("skipping download:", err)
 		}
 	}
+
+	return nil
 }
 
-func downloadFromUrl(url string, title string, location string) {
-	tokens := strings.Split(url, ".")
-	fileName := title + "." + tokens[len(tokens)-1]
-	fmt.Println("Downloading", url, "to", fileName)
+func downloadFromURL(downloadURL string, title string, location string) error {
+	fileExt := imageExtension(downloadURL)
+	fileName := fmt.Sprintf("%s%s", sanitizeFilename(title), fileExt)
+	fmt.Println("Downloading", downloadURL, "to", fileName)
 
-	// add trailing slash if doesn't already exist
-	if location[len(location)-1:] != "/" {
-		location = location + "/"
+	if location == "" {
+		location = defaultLocation
 	}
 
-	// create directory location if doesn't exist
-	err := os.MkdirAll(location, os.ModePerm)
-	if err != nil {
-		panic(err)
+	if err := os.MkdirAll(location, os.ModePerm); err != nil {
+		return err
 	}
 
-	// Get bytes
-	response, err := http.Get(url)
+	path := filepath.Join(location, fileName)
+	if _, err := os.Stat(path); err == nil {
+		fmt.Println("File already exists, skipping:", path)
+		return nil
+	}
+
+	response, err := http.Get(downloadURL)
 	if err != nil {
-		fmt.Println("Error while downloading", url, "-", err)
-		return
+		return fmt.Errorf("error while downloading %s - %w", downloadURL, err)
 	}
 	defer response.Body.Close()
 
-	// check if file exists
-	if _, err := os.Stat(location + fileName); os.IsNotExist(err) {
-		// Create file
-		output, err := os.Create(location + fileName)
-		if err != nil {
-			fmt.Println("Error while creating", fileName, "-", err)
-			return
-		}
-		defer output.Close()
-
-		// Copy to file
-		n, err := io.Copy(output, response.Body)
-		if err != nil {
-			fmt.Println("Error while downloading", url, "-", err)
-			return
-		}
-		fmt.Println(n, "bytes downloaded.")
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed with status %s", response.Status)
 	}
+
+	output, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("error while creating %s - %w", fileName, err)
+	}
+	defer output.Close()
+
+	n, err := io.Copy(output, response.Body)
+	if err != nil {
+		return fmt.Errorf("error while downloading %s - %w", downloadURL, err)
+	}
+	fmt.Println(n, "bytes downloaded.")
+
+	return nil
+}
+
+func parsePairValue(raw string, separator string, fieldName string) (int, int, error) {
+	sanitized := strings.ReplaceAll(raw, " ", "")
+	parts := strings.Split(sanitized, separator)
+	if len(parts) != 2 {
+		return 0, 0, fmt.Errorf("invalid %s format: expected width%sheight", fieldName, separator)
+	}
+
+	left, err := strconv.Atoi(parts[0])
+	if err != nil || left <= 0 {
+		return 0, 0, fmt.Errorf("invalid %s width value", fieldName)
+	}
+
+	right, err := strconv.Atoi(parts[1])
+	if err != nil || right <= 0 {
+		return 0, 0, fmt.Errorf("invalid %s height value", fieldName)
+	}
+
+	return left, right, nil
+}
+
+func isValidTopPeriod(value string) bool {
+	_, ok := validTopPeriods[strings.ToLower(value)]
+	return ok
+}
+
+func hasSupportedImageExtension(rawURL string) bool {
+	_, ok := supportedImageExtensions[imageExtension(rawURL)]
+	return ok
+}
+
+func imageExtension(rawURL string) string {
+	parsedURL, err := url.Parse(rawURL)
+	if err != nil {
+		return ".jpg"
+	}
+
+	ext := strings.ToLower(path.Ext(parsedURL.Path))
+	if ext == "" {
+		return ".jpg"
+	}
+
+	if _, ok := supportedImageExtensions[ext]; !ok {
+		return ".jpg"
+	}
+
+	return ext
+}
+
+func sanitizeFilename(name string) string {
+	if name == "" {
+		return "reddit_image"
+	}
+
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '.':
+			b.WriteRune(r)
+		case unicode.IsSpace(r):
+			b.WriteRune('_')
+		default:
+			b.WriteRune('_')
+		}
+	}
+
+	clean := strings.Trim(b.String(), "._")
+	if clean == "" {
+		return "reddit_image"
+	}
+
+	return clean
 }
