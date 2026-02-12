@@ -2,15 +2,20 @@ name: Release Go project
 
 on:
   push:
-    tags:
-      - "*" # triggers only if push new tag version, like `0.8.4` or else
+    branches:
+      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
-    name: GoReleaser build
+  release:
+    name: Auto Semver Release
     runs-on: ubuntu-latest
 
     steps:
@@ -26,7 +31,86 @@ jobs:
           cache: true
         id: go
 
+      - name: Determine next semver tag from commits
+        id: semver
+        run: |
+          set -euo pipefail
+
+          latest_tag="$(git tag --list 'v*' --sort=-version:refname | head -n1)"
+          if [ -z "${latest_tag}" ]; then
+            latest_tag="v0.0.0"
+            commit_count="$(git rev-list --count HEAD)"
+            log_range="HEAD"
+          else
+            commit_count="$(git rev-list --count "${latest_tag}..HEAD")"
+            log_range="${latest_tag}..HEAD"
+          fi
+
+          if [ "${commit_count}" -eq 0 ]; then
+            echo "No new commits since ${latest_tag}; skipping release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          messages="$(git log --format=%s%n%b ${log_range})"
+          bump="patch"
+
+          if echo "${messages}" | grep -Eq 'BREAKING CHANGE|^[^[:space:]]+(\([^)]+\))?!:'; then
+            bump="major"
+          elif echo "${messages}" | grep -Eq '^feat(\([^)]+\))?: '; then
+            bump="minor"
+          fi
+
+          version="${latest_tag#v}"
+          IFS='.' read -r major minor patch <<< "${version}"
+          major="${major:-0}"
+          minor="${minor:-0}"
+          patch="${patch:-0}"
+
+          case "${bump}" in
+            major)
+              major=$((major + 1))
+              minor=0
+              patch=0
+              ;;
+            minor)
+              minor=$((minor + 1))
+              patch=0
+              ;;
+            *)
+              patch=$((patch + 1))
+              ;;
+          esac
+
+          next_tag="v${major}.${minor}.${patch}"
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+          echo "next_tag=${next_tag}" >> "$GITHUB_OUTPUT"
+          echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
+          echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+          echo "Next tag: ${next_tag} (${bump})"
+
+      - name: Create and push release tag
+        id: tag
+        if: steps.semver.outputs.should_release == 'true'
+        run: |
+          set -euo pipefail
+
+          next_tag="${{ steps.semver.outputs.next_tag }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${next_tag}" >/dev/null 2>&1; then
+            echo "Tag ${next_tag} already exists on origin; skipping tag creation."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "${next_tag}" -m "Release ${next_tag}"
+          git push origin "${next_tag}"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+
       - name: Run GoReleaser
+        if: steps.semver.outputs.should_release == 'true' && steps.tag.outputs.created == 'true'
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest

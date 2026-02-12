@@ -72,9 +72,13 @@ go vet ./...
 
 ## Release
 
-There is a GitHub Actions workflow at `.github/workflows/release_build.yml` that uses `goreleaser`.
+There is a GitHub Actions workflow at `/Users/ryan/code/snoo-dl/.github/workflows/release_build.yml` that auto-releases on merge/push to `main` using semver bump rules from commit messages:
+
+- `feat:` => minor bump
+- `fix:`, `chore:`, etc => patch bump
+- `BREAKING CHANGE` or `type!:` => major bump
 
 ```bash
-git tag <version>
-git push --tags
+# Optional local dry-run before merging:
+goreleaser release --snapshot --clean
 ```
