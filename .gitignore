@@ -18,3 +18,4 @@
 .gocache/
 .gomodcache/
 .gopath/
+.DS_Store
