@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -24,6 +26,7 @@ var (
 
 	defaultTopPeriod = "week"
 	defaultLocation  = "./"
+	defaultLimit     = 100
 
 	httpClient = &http.Client{
 		Timeout: 30 * time.Second,
@@ -45,6 +48,12 @@ var (
 		".gif":  {},
 	}
 )
+
+type imageCandidate struct {
+	URL    string
+	Width  int
+	Height int
+}
 
 // downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
@@ -73,24 +82,29 @@ var downloadCmd = &cobra.Command{
 		}
 
 		location, _ := cmd.Flags().GetString("location")
+		limit, _ := cmd.Flags().GetInt("limit")
 		resolution, _ := cmd.Flags().GetString("resolution")
 		aspectRatio, _ := cmd.Flags().GetString("aspect-ratio")
 		filter, err := parseFilters(resolution, aspectRatio)
 		if err != nil {
 			return err
 		}
-
-		if location != "" {
-			return getTopWallpapers(subreddit, topPeriod, filter, location)
+		if limit <= 0 {
+			return errors.New("limit must be greater than 0")
 		}
 
-		return getTopWallpapers(subreddit, topPeriod, filter, defaultLocation)
+		if location != "" {
+			return getTopWallpapers(cmd.Context(), subreddit, topPeriod, filter, location, limit)
+		}
+
+		return getTopWallpapers(cmd.Context(), subreddit, topPeriod, filter, defaultLocation, limit)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
 	downloadCmd.Flags().StringP("location", "l", defaultLocation, "location to download scraped images")
+	downloadCmd.Flags().Int("limit", defaultLimit, "max number of top posts to process")
 	downloadCmd.Flags().StringP("resolution", "r", "", "only download images with specified resolution (i.e. 1920x1080)")
 	downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
 }
@@ -120,69 +134,95 @@ func parseFilters(resolution string, aspectRatio string) (models.Filter, error) 
 
 // timesort = [day | week | month | year | all]
 // location = Path to save images
-func getTopWallpapers(subreddit string, timesort string, filter models.Filter, location string) error {
-	requestURL := fmt.Sprintf("%s/%s/top.json?t=%s", redditURL, subreddit, timesort)
-	req, err := http.NewRequest(http.MethodGet, requestURL, nil)
-	if err != nil {
-		return err
-	}
+func getTopWallpapers(ctx context.Context, subreddit string, timesort string, filter models.Filter, location string, limit int) error {
+	remaining := limit
+	after := ""
 
-	req.Header.Set("User-agent", "snoo-dl/0.1")
+	for remaining > 0 {
+		pageLimit := remaining
+		if pageLimit > 100 {
+			pageLimit = 100
+		}
 
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
+		responseObject, err := fetchTopPage(ctx, subreddit, timesort, after, pageLimit)
+		if err != nil {
+			return err
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("reddit request failed with status %s", resp.Status)
-	}
+		posts := responseObject.Data.Post
+		if len(posts) == 0 {
+			return nil
+		}
 
-	var responseObject models.Response
-	if err := json.NewDecoder(resp.Body).Decode(&responseObject); err != nil {
-		return err
-	}
+		for _, post := range posts {
+			candidates := extractCandidateImageURLs(post)
+			if len(candidates) == 0 {
+				continue
+			}
 
-	posts := responseObject.Data.Post
+			filteredCandidates := filterCandidates(candidates, filter)
+			if len(filteredCandidates) == 0 {
+				continue
+			}
 
-	for _, post := range posts {
-		canDownload := true
-		title := post.Data.Title
-		postURL := post.Data.Url
-
-		if (models.Filter{}) != filter {
-			canDownload = false
-			if len(post.Data.Preview.Images) != 0 {
-				width := post.Data.Preview.Images[0].Source.Width
-				height := post.Data.Preview.Images[0].Source.Height
-
-				hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
-				hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
-
-				resolutionMatch := !hasResolutionFilter || (height == filter.ResolutionHeight && width == filter.ResolutionWidth)
-				aspectRatioMatch := !hasAspectRatioFilter || (width*filter.AspectRatioHeight == height*filter.AspectRatioWidth)
-
-				if resolutionMatch && aspectRatioMatch {
-					canDownload = true
+			urls := make([]string, 0, len(filteredCandidates))
+			for _, candidate := range filteredCandidates {
+				urls = append(urls, candidate.URL)
+			}
+			fmt.Println(post.Data.Title + " => " + strings.Join(urls, ", "))
+			for i, candidate := range filteredCandidates {
+				name := post.Data.Title
+				if i > 0 {
+					name = fmt.Sprintf("%s_%d", post.Data.Title, i+1)
+				}
+				if err := downloadFromURL(ctx, candidate.URL, name, location); err != nil {
+					fmt.Println("skipping download:", err)
 				}
 			}
 		}
 
-		if !canDownload || !hasSupportedImageExtension(postURL) {
-			continue
+		remaining -= len(posts)
+		if responseObject.Data.After == "" {
+			break
 		}
-
-		fmt.Println(title + " => " + postURL)
-		if err := downloadFromURL(postURL, title, location); err != nil {
-			fmt.Println("skipping download:", err)
-		}
+		after = responseObject.Data.After
 	}
 
 	return nil
 }
 
-func downloadFromURL(downloadURL string, title string, location string) error {
+func fetchTopPage(ctx context.Context, subreddit string, timesort string, after string, limit int) (models.Response, error) {
+	var responseObject models.Response
+
+	requestURL := fmt.Sprintf("%s/%s/top.json?t=%s&limit=%d", redditURL, subreddit, timesort, limit)
+	if after != "" {
+		requestURL += "&after=" + url.QueryEscape(after)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
+	if err != nil {
+		return responseObject, err
+	}
+
+	req.Header.Set("User-agent", "snoo-dl/0.1")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return responseObject, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return responseObject, fmt.Errorf("reddit request failed with status %s", resp.Status)
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&responseObject); err != nil {
+		return responseObject, err
+	}
+
+	return responseObject, nil
+}
+
+func downloadFromURL(ctx context.Context, downloadURL string, title string, location string) error {
 	fileExt := imageExtension(downloadURL)
 	fileName := fmt.Sprintf("%s%s", sanitizeFilename(title), fileExt)
 	fmt.Println("Downloading", downloadURL, "to", fileName)
@@ -201,7 +241,12 @@ func downloadFromURL(downloadURL string, title string, location string) error {
 		return nil
 	}
 
-	response, err := http.Get(downloadURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	if err != nil {
+		return err
+	}
+
+	response, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("error while downloading %s - %w", downloadURL, err)
 	}
@@ -224,6 +269,41 @@ func downloadFromURL(downloadURL string, title string, location string) error {
 	fmt.Println(n, "bytes downloaded.")
 
 	return nil
+}
+
+func extractCandidateImageURLs(post models.Post) []imageCandidate {
+	candidates := make([]imageCandidate, 0, 4)
+
+	previewWidth, previewHeight := 0, 0
+	if len(post.Data.Preview.Images) > 0 {
+		previewWidth = post.Data.Preview.Images[0].Source.Width
+		previewHeight = post.Data.Preview.Images[0].Source.Height
+	}
+
+	add := func(rawURL string, width int, height int) {
+		unescaped := html.UnescapeString(strings.TrimSpace(rawURL))
+		if unescaped == "" || !hasSupportedImageExtension(unescaped) {
+			return
+		}
+		candidates = append(candidates, imageCandidate{
+			URL:    unescaped,
+			Width:  width,
+			Height: height,
+		})
+	}
+
+	add(post.Data.URLOverriddenByDest, previewWidth, previewHeight)
+	add(post.Data.Url, previewWidth, previewHeight)
+
+	if post.Data.IsGallery {
+		for _, item := range post.Data.GalleryData.Items {
+			if meta, ok := post.Data.MediaMetadata[item.MediaID]; ok {
+				add(meta.S.U, meta.S.X, meta.S.Y)
+			}
+		}
+	}
+
+	return uniqueCandidates(candidates)
 }
 
 func parsePairValue(raw string, separator string, fieldName string) (int, int, error) {
@@ -252,26 +332,33 @@ func isValidTopPeriod(value string) bool {
 }
 
 func hasSupportedImageExtension(rawURL string) bool {
-	_, ok := supportedImageExtensions[imageExtension(rawURL)]
+	ext := imageExtension(rawURL)
+	_, ok := supportedImageExtensions[ext]
 	return ok
 }
 
 func imageExtension(rawURL string) string {
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
-		return ".jpg"
+		return ""
 	}
 
 	ext := strings.ToLower(path.Ext(parsedURL.Path))
-	if ext == "" {
-		return ".jpg"
+	if _, ok := supportedImageExtensions[ext]; ok {
+		return ext
 	}
 
-	if _, ok := supportedImageExtensions[ext]; !ok {
-		return ".jpg"
+	queryFormat := strings.ToLower(parsedURL.Query().Get("format"))
+	if queryFormat != "" {
+		if !strings.HasPrefix(queryFormat, ".") {
+			queryFormat = "." + queryFormat
+		}
+		if _, ok := supportedImageExtensions[queryFormat]; ok {
+			return queryFormat
+		}
 	}
 
-	return ext
+	return ""
 }
 
 func sanitizeFilename(name string) string {
@@ -298,4 +385,56 @@ func sanitizeFilename(name string) string {
 	}
 
 	return clean
+}
+
+func filterCandidates(candidates []imageCandidate, filter models.Filter) []imageCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	out := make([]imageCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !matchesFilter(candidate, filter) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+
+	return out
+}
+
+func matchesFilter(candidate imageCandidate, filter models.Filter) bool {
+	if (models.Filter{}) == filter {
+		return true
+	}
+
+	if candidate.Width <= 0 || candidate.Height <= 0 {
+		return false
+	}
+
+	hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
+	hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
+
+	resolutionMatch := !hasResolutionFilter || (candidate.Height == filter.ResolutionHeight && candidate.Width == filter.ResolutionWidth)
+	aspectRatioMatch := !hasAspectRatioFilter || (candidate.Width*filter.AspectRatioHeight == candidate.Height*filter.AspectRatioWidth)
+
+	return resolutionMatch && aspectRatioMatch
+}
+
+func uniqueCandidates(values []imageCandidate) []imageCandidate {
+	if len(values) == 0 {
+		return nil
+	}
+
+	out := make([]imageCandidate, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if _, ok := seen[value.URL]; ok {
+			continue
+		}
+		seen[value.URL] = struct{}{}
+		out = append(out, value)
+	}
+
+	return out
 }

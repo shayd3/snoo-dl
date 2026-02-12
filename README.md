@@ -4,7 +4,7 @@
 
 ## Requirements
 
-- Go `1.21+`
+- Go `1.25+`
 
 ## Install
 
@@ -39,18 +39,24 @@ snoo-dl download wallpapers week --location ./images --resolution 1920x1080
 
 # Filter by aspect ratio
 snoo-dl download wallpapers all --aspect-ratio 16:9
+
+# Process up to 300 top posts (fetched with Reddit pagination)
+snoo-dl download wallpapers month --limit 300
 ```
 
 Flags:
 
 - `-l, --location` download directory (default `./`)
+- `--limit` max number of top posts to process (default `100`)
 - `-r, --resolution` exact resolution filter, format `WIDTHxHEIGHT` (example: `1920x1080`)
 - `-a, --aspect-ratio` ratio filter, format `W:H` (example: `16:9`)
 - `--config` optional path to config file (`$HOME/.snoodl.yaml` by default)
 
 ## Current behavior and notes
 
-- Only direct image URLs are downloaded (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`).
+- Top posts are fetched with pagination until `--limit` is reached or no additional pages exist.
+- Image URL extraction includes direct/original post URLs and gallery media metadata (preview variants are skipped).
+- Only image URLs with known supported formats are downloaded (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`).
 - Existing files are skipped.
 - Invalid filter formats return a friendly error instead of crashing.
 - Reddit API failures and download HTTP failures return clear errors.
