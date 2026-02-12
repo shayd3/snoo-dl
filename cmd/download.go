@@ -49,6 +49,12 @@ var (
 	}
 )
 
+type imageCandidate struct {
+	URL    string
+	Width  int
+	Height int
+}
+
 // downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
 	Use:   "download {SUBREDDIT} [day|week(default)|month|year|all]",
@@ -149,22 +155,27 @@ func getTopWallpapers(ctx context.Context, subreddit string, timesort string, fi
 		}
 
 		for _, post := range posts {
-			if !passesFilters(post, filter) {
+			candidates := extractCandidateImageURLs(post)
+			if len(candidates) == 0 {
 				continue
 			}
 
-			postURLs := extractCandidateImageURLs(post)
-			if len(postURLs) == 0 {
+			filteredCandidates := filterCandidates(candidates, filter)
+			if len(filteredCandidates) == 0 {
 				continue
 			}
 
-			fmt.Println(post.Data.Title + " => " + strings.Join(postURLs, ", "))
-			for i, postURL := range postURLs {
+			urls := make([]string, 0, len(filteredCandidates))
+			for _, candidate := range filteredCandidates {
+				urls = append(urls, candidate.URL)
+			}
+			fmt.Println(post.Data.Title + " => " + strings.Join(urls, ", "))
+			for i, candidate := range filteredCandidates {
 				name := post.Data.Title
 				if i > 0 {
 					name = fmt.Sprintf("%s_%d", post.Data.Title, i+1)
 				}
-				if err := downloadFromURL(ctx, postURL, name, location); err != nil {
+				if err := downloadFromURL(ctx, candidate.URL, name, location); err != nil {
 					fmt.Println("skipping download:", err)
 				}
 			}
@@ -260,56 +271,39 @@ func downloadFromURL(ctx context.Context, downloadURL string, title string, loca
 	return nil
 }
 
-func passesFilters(post models.Post, filter models.Filter) bool {
-	if (models.Filter{}) == filter {
-		return true
+func extractCandidateImageURLs(post models.Post) []imageCandidate {
+	candidates := make([]imageCandidate, 0, 4)
+
+	previewWidth, previewHeight := 0, 0
+	if len(post.Data.Preview.Images) > 0 {
+		previewWidth = post.Data.Preview.Images[0].Source.Width
+		previewHeight = post.Data.Preview.Images[0].Source.Height
 	}
 
-	if len(post.Data.Preview.Images) == 0 {
-		return false
-	}
-
-	width := post.Data.Preview.Images[0].Source.Width
-	height := post.Data.Preview.Images[0].Source.Height
-	hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
-	hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
-
-	resolutionMatch := !hasResolutionFilter || (height == filter.ResolutionHeight && width == filter.ResolutionWidth)
-	aspectRatioMatch := !hasAspectRatioFilter || (width*filter.AspectRatioHeight == height*filter.AspectRatioWidth)
-
-	return resolutionMatch && aspectRatioMatch
-}
-
-func extractCandidateImageURLs(post models.Post) []string {
-	candidates := make([]string, 0, 4)
-
-	add := func(rawURL string) {
+	add := func(rawURL string, width int, height int) {
 		unescaped := html.UnescapeString(strings.TrimSpace(rawURL))
 		if unescaped == "" || !hasSupportedImageExtension(unescaped) {
 			return
 		}
-		candidates = append(candidates, unescaped)
+		candidates = append(candidates, imageCandidate{
+			URL:    unescaped,
+			Width:  width,
+			Height: height,
+		})
 	}
 
-	add(post.Data.URLOverriddenByDest)
-	add(post.Data.Url)
-
-	if len(post.Data.Preview.Images) > 0 {
-		add(post.Data.Preview.Images[0].Source.URL)
-		for _, res := range post.Data.Preview.Images[0].Resolutions {
-			add(res.URL)
-		}
-	}
+	add(post.Data.URLOverriddenByDest, previewWidth, previewHeight)
+	add(post.Data.Url, previewWidth, previewHeight)
 
 	if post.Data.IsGallery {
 		for _, item := range post.Data.GalleryData.Items {
 			if meta, ok := post.Data.MediaMetadata[item.MediaID]; ok {
-				add(meta.S.U)
+				add(meta.S.U, meta.S.X, meta.S.Y)
 			}
 		}
 	}
 
-	return uniqueStrings(candidates)
+	return uniqueCandidates(candidates)
 }
 
 func parsePairValue(raw string, separator string, fieldName string) (int, int, error) {
@@ -393,18 +387,52 @@ func sanitizeFilename(name string) string {
 	return clean
 }
 
-func uniqueStrings(values []string) []string {
+func filterCandidates(candidates []imageCandidate, filter models.Filter) []imageCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	out := make([]imageCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		if !matchesFilter(candidate, filter) {
+			continue
+		}
+		out = append(out, candidate)
+	}
+
+	return out
+}
+
+func matchesFilter(candidate imageCandidate, filter models.Filter) bool {
+	if (models.Filter{}) == filter {
+		return true
+	}
+
+	if candidate.Width <= 0 || candidate.Height <= 0 {
+		return false
+	}
+
+	hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
+	hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
+
+	resolutionMatch := !hasResolutionFilter || (candidate.Height == filter.ResolutionHeight && candidate.Width == filter.ResolutionWidth)
+	aspectRatioMatch := !hasAspectRatioFilter || (candidate.Width*filter.AspectRatioHeight == candidate.Height*filter.AspectRatioWidth)
+
+	return resolutionMatch && aspectRatioMatch
+}
+
+func uniqueCandidates(values []imageCandidate) []imageCandidate {
 	if len(values) == 0 {
 		return nil
 	}
 
-	out := make([]string, 0, len(values))
+	out := make([]imageCandidate, 0, len(values))
 	seen := make(map[string]struct{}, len(values))
 	for _, value := range values {
-		if _, ok := seen[value]; ok {
+		if _, ok := seen[value.URL]; ok {
 			continue
 		}
-		seen[value] = struct{}{}
+		seen[value.URL] = struct{}{}
 		out = append(out, value)
 	}
 

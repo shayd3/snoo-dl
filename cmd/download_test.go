@@ -103,7 +103,9 @@ func TestExtractCandidateImageURLs(t *testing.T) {
 				Images: []models.PreviewImage{
 					{
 						Source: models.ImageSource{
-							URL: "https://preview.redd.it/source.jpg?width=1920&amp;format=pjpg",
+							URL:    "https://preview.redd.it/source.jpg?width=1920&amp;format=pjpg",
+							Width:  1920,
+							Height: 1080,
 						},
 					},
 				},
@@ -112,14 +114,36 @@ func TestExtractCandidateImageURLs(t *testing.T) {
 	}
 
 	got := extractCandidateImageURLs(post)
-	if len(got) != 4 {
-		t.Fatalf("expected 4 candidate URLs, got %d (%v)", len(got), got)
+	if len(got) != 3 {
+		t.Fatalf("expected 3 candidate URLs, got %d (%v)", len(got), got)
 	}
 
-	for _, url := range got {
-		if strings.Contains(url, "&amp;") {
-			t.Fatalf("expected HTML entities to be unescaped, got %q", url)
+	for _, candidate := range got {
+		if strings.Contains(candidate.URL, "&amp;") {
+			t.Fatalf("expected HTML entities to be unescaped, got %q", candidate.URL)
 		}
+		if strings.Contains(candidate.URL, "preview.redd.it") {
+			t.Fatalf("did not expect preview URL candidate: %q", candidate.URL)
+		}
+	}
+}
+
+func TestFilterCandidatesByResolution(t *testing.T) {
+	candidates := []imageCandidate{
+		{URL: "https://i.redd.it/a.jpg", Width: 1920, Height: 1080},
+		{URL: "https://i.redd.it/b.jpg", Width: 1080, Height: 1080},
+	}
+
+	filtered := filterCandidates(candidates, models.Filter{
+		ResolutionWidth:  1920,
+		ResolutionHeight: 1080,
+	})
+
+	if len(filtered) != 1 {
+		t.Fatalf("expected 1 filtered candidate, got %d", len(filtered))
+	}
+	if filtered[0].URL != "https://i.redd.it/a.jpg" {
+		t.Fatalf("unexpected filtered URL %q", filtered[0].URL)
 	}
 }
 

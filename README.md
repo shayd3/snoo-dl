@@ -55,7 +55,7 @@ Flags:
 ## Current behavior and notes
 
 - Top posts are fetched with pagination until `--limit` is reached or no additional pages exist.
-- Image URL extraction includes direct URLs, preview source URLs, and gallery media metadata.
+- Image URL extraction includes direct/original post URLs and gallery media metadata (preview variants are skipped).
 - Only image URLs with known supported formats are downloaded (`.jpg`, `.jpeg`, `.png`, `.webp`, `.gif`).
 - Existing files are skipped.
 - Invalid filter formats return a friendly error instead of crashing.
