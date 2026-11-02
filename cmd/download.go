@@ -2,439 +2,305 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
-	"path"
 	"path/filepath"
-	"strconv"
+	"runtime"
 	"strings"
 	"time"
-	"unicode"
 
-	"github.com/shayd3/snoo-dl/models"
+	"github.com/shayd3/snoo-dl/internal/downloader"
+	"github.com/shayd3/snoo-dl/internal/reddit"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
+const (
+	defaultSort        = "top"
+	defaultTime        = "week"
+	defaultLocation    = "."
+	defaultLimit       = 100
+	defaultConcurrency = 4
+	defaultRetries     = 3
+	defaultMaxSizeMB   = 50
+)
+
+// Overridden in tests.
 var (
-	redditURL = "https://www.reddit.com/r"
-
-	defaultTopPeriod = "week"
-	defaultLocation  = "./"
-	defaultLimit     = 100
-
-	httpClient = &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
-	validTopPeriods = map[string]struct{}{
-		"day":   {},
-		"week":  {},
-		"month": {},
-		"year":  {},
-		"all":   {},
-	}
-
-	supportedImageExtensions = map[string]struct{}{
-		".jpg":  {},
-		".jpeg": {},
-		".png":  {},
-		".webp": {},
-		".gif":  {},
-	}
+	redditBaseURL  = reddit.DefaultBaseURL
+	redditTokenURL = reddit.DefaultTokenURL
+	redditOAuthURL = reddit.DefaultOAuthBaseURL
+	apiHTTPClient  = func() *http.Client { return &http.Client{Timeout: 30 * time.Second} }
+	imageClient    = func() *http.Client { return downloader.NewHTTPClient(2 * time.Minute) }
+	validateURL    = downloader.ValidateURL
 )
 
-type imageCandidate struct {
-	URL    string
-	Width  int
-	Height int
-}
-
-// downloadCmd represents the download command
 var downloadCmd = &cobra.Command{
-	Use:   "download {SUBREDDIT} [day|week(default)|month|year|all]",
-	Short: "Download images from a specified subreddit",
-	Long: `download - will download all images from the specific subreddit.
-	Default: TOP_PERIOD=week, SUBREDDIT=wallpapers`,
-	Args: func(_ *cobra.Command, args []string) error {
-		if len(args) > 2 || len(args) == 0 {
-			return errors.New("invalid arguments")
-		}
+	Use:   "download SUBREDDIT... [day|week|month|year|all]",
+	Short: "Download images from one or more subreddits",
+	Long: `Download images from one or more subreddits.
 
-		if len(args) == 2 {
-			if !isValidTopPeriod(args[1]) {
-				return errors.New("provided TOP_PERIOD was invalid. Valid periods are: day|week|month|year|all")
-			}
-		}
+By default the top posts of the past week are used. Pick a different listing
+with --sort (hot, new, top, rising, controversial) and --time (hour, day,
+week, month, year, all). For backwards compatibility the time window can
+also be given as the last argument.
 
-		return nil
-	},
-	RunE: func(cmd *cobra.Command, args []string) error {
-		subreddit := args[0]
-		topPeriod := defaultTopPeriod
-		if len(args) == 2 {
-			topPeriod = strings.ToLower(args[1])
-		}
-
-		location, _ := cmd.Flags().GetString("location")
-		limit, _ := cmd.Flags().GetInt("limit")
-		resolution, _ := cmd.Flags().GetString("resolution")
-		aspectRatio, _ := cmd.Flags().GetString("aspect-ratio")
-		filter, err := parseFilters(resolution, aspectRatio)
-		if err != nil {
-			return err
-		}
-		if limit <= 0 {
-			return errors.New("limit must be greater than 0")
-		}
-
-		if location != "" {
-			return getTopWallpapers(cmd.Context(), subreddit, topPeriod, filter, location, limit)
-		}
-
-		return getTopWallpapers(cmd.Context(), subreddit, topPeriod, filter, defaultLocation, limit)
-	},
+Subreddits can be written as "wallpapers", "r/wallpapers" or combined as
+"wallpapers+earthporn". Files are named <title>_<post id>[_<gallery #>].<ext>,
+and files that already exist are skipped.`,
+	Example: `  snoo-dl download wallpapers
+  snoo-dl download earthporn month
+  snoo-dl download wallpapers earthporn --sort hot --limit 50
+  snoo-dl download wallpapers --time all --aspect-ratio 16:9 --aspect-tolerance 0.02
+  snoo-dl download wallpapers --min-width 2560 --skip-nsfw --dry-run`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runDownload,
 }
 
 func init() {
 	rootCmd.AddCommand(downloadCmd)
-	downloadCmd.Flags().StringP("location", "l", defaultLocation, "location to download scraped images")
-	downloadCmd.Flags().Int("limit", defaultLimit, "max number of top posts to process")
-	downloadCmd.Flags().StringP("resolution", "r", "", "only download images with specified resolution (i.e. 1920x1080)")
-	downloadCmd.Flags().StringP("aspect-ratio", "a", "", "only download images that meet specified aspect ratio (i.e. 16:9)")
+	f := downloadCmd.Flags()
+	f.StringP("location", "l", defaultLocation, "directory to save images in")
+	f.Int("limit", defaultLimit, "max number of posts to process per subreddit")
+	f.StringP("sort", "s", defaultSort, "listing to use: hot|new|top|rising|controversial")
+	f.StringP("time", "t", defaultTime, "time window for top/controversial: hour|day|week|month|year|all")
+	f.StringP("resolution", "r", "", "only download images with this exact resolution (e.g. 1920x1080)")
+	f.StringP("aspect-ratio", "a", "", "only download images with this aspect ratio (e.g. 16:9)")
+	f.Float64("aspect-tolerance", 0, "allowed relative difference from --aspect-ratio (e.g. 0.02 for 2%)")
+	f.Int("min-width", 0, "only download images at least this wide")
+	f.Int("min-height", 0, "only download images at least this tall")
+	f.Int("min-score", 0, "only download posts with at least this score")
+	f.Bool("skip-nsfw", false, "skip posts marked NSFW")
+	f.Bool("nsfw-only", false, "only download posts marked NSFW")
+	f.BoolP("dry-run", "n", false, "list what would be downloaded without downloading")
+	f.IntP("concurrency", "c", defaultConcurrency, "number of images to download at once")
+	f.Int("retries", defaultRetries, "times to retry Reddit requests after rate limiting or server errors")
+	f.Int("max-size", defaultMaxSizeMB, "skip images larger than this many megabytes")
+	f.BoolP("quiet", "q", false, "only print errors and the summary")
+	f.BoolP("verbose", "v", false, "also print skipped and filtered posts")
+
+	if err := viper.BindPFlags(f); err != nil {
+		panic(err)
+	}
 }
 
-func parseFilters(resolution string, aspectRatio string) (models.Filter, error) {
-	filter := models.Filter{}
-	if resolution != "" {
-		width, height, err := parsePairValue(resolution, "x", "resolution")
+type downloadArgs struct {
+	subreddits []string
+	sort       string
+	period     string
+}
+
+// parseDownloadArgs splits positional args into subreddits and the optional
+// legacy time window, and resolves --sort/--time.
+func parseDownloadArgs(cmd *cobra.Command, args []string) (downloadArgs, error) {
+	out := downloadArgs{
+		sort:   strings.ToLower(viper.GetString("sort")),
+		period: strings.ToLower(viper.GetString("time")),
+	}
+
+	names := args
+	if len(args) >= 2 && reddit.IsValidTime(args[len(args)-1]) {
+		if !cmd.Flags().Changed("time") {
+			out.period = strings.ToLower(args[len(args)-1])
+		}
+		names = args[:len(args)-1]
+	}
+
+	if !reddit.IsValidSort(out.sort) {
+		return out, fmt.Errorf("invalid --sort %q: valid values are %s", out.sort, strings.Join(reddit.Sorts, "|"))
+	}
+	if !reddit.IsValidTime(out.period) {
+		return out, fmt.Errorf("invalid time window %q: valid values are %s", out.period, strings.Join(reddit.Times, "|"))
+	}
+
+	seen := map[string]struct{}{}
+	for _, raw := range names {
+		name, err := reddit.NormalizeSubreddit(raw)
+		if err != nil {
+			return out, err
+		}
+		key := strings.ToLower(name)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		out.subreddits = append(out.subreddits, name)
+	}
+	return out, nil
+}
+
+func parseFilter() (downloader.Filter, error) {
+	filter := downloader.Filter{
+		AspectTolerance: viper.GetFloat64("aspect-tolerance"),
+		MinWidth:        viper.GetInt("min-width"),
+		MinHeight:       viper.GetInt("min-height"),
+	}
+	if filter.AspectTolerance < 0 || filter.MinWidth < 0 || filter.MinHeight < 0 {
+		return filter, errors.New("--aspect-tolerance, --min-width and --min-height must not be negative")
+	}
+
+	if resolution := viper.GetString("resolution"); resolution != "" {
+		w, h, err := downloader.ParsePair(resolution, "x", "resolution")
 		if err != nil {
 			return filter, err
 		}
-		filter.ResolutionWidth = width
-		filter.ResolutionHeight = height
+		filter.Width, filter.Height = w, h
 	}
-
-	if aspectRatio != "" {
-		width, height, err := parsePairValue(aspectRatio, ":", "aspect-ratio")
+	if ratio := viper.GetString("aspect-ratio"); ratio != "" {
+		w, h, err := downloader.ParsePair(ratio, ":", "aspect-ratio")
 		if err != nil {
 			return filter, err
 		}
-		filter.AspectRatioWidth = width
-		filter.AspectRatioHeight = height
+		filter.AspectWidth, filter.AspectHeight = w, h
 	}
-
 	return filter, nil
 }
 
-// timesort = [day | week | month | year | all]
-// location = Path to save images
-func getTopWallpapers(ctx context.Context, subreddit string, timesort string, filter models.Filter, location string, limit int) error {
+func userAgent() string {
+	contact := "+https://github.com/shayd3/snoo-dl"
+	if user := strings.TrimPrefix(viper.GetString("reddit-username"), "u/"); user != "" {
+		contact = "by /u/" + user
+	}
+	return fmt.Sprintf("%s:snoo-dl:%s (%s)", runtime.GOOS, Version(), contact)
+}
+
+func runDownload(cmd *cobra.Command, args []string) error {
+	parsed, err := parseDownloadArgs(cmd, args)
+	if err != nil {
+		return err
+	}
+	filter, err := parseFilter()
+	if err != nil {
+		return err
+	}
+
+	limit := viper.GetInt("limit")
+	if limit <= 0 {
+		return errors.New("--limit must be greater than 0")
+	}
+	if viper.GetBool("skip-nsfw") && viper.GetBool("nsfw-only") {
+		return errors.New("--skip-nsfw and --nsfw-only can't be used together")
+	}
+	concurrency := viper.GetInt("concurrency")
+	if concurrency <= 0 {
+		return errors.New("--concurrency must be greater than 0")
+	}
+	maxSize := viper.GetInt("max-size")
+	if maxSize <= 0 {
+		return errors.New("--max-size must be greater than 0")
+	}
+	location := viper.GetString("location")
+	if location == "" {
+		location = defaultLocation
+	}
+	if location == "~" || strings.HasPrefix(location, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			location = filepath.Join(home, strings.TrimPrefix(location, "~"))
+		}
+	}
+
+	ua := userAgent()
+	client := reddit.New(apiHTTPClient(), ua)
+	client.BaseURL = redditBaseURL
+	client.TokenURL = redditTokenURL
+	client.OAuthBaseURL = redditOAuthURL
+	client.MaxRetries = max(viper.GetInt("retries"), 0)
+	client.ClientID = viper.GetString("client-id")
+	client.ClientSecret = viper.GetString("client-secret")
+
+	dl := &downloader.Downloader{
+		HTTP:        imageClient(),
+		UserAgent:   ua,
+		Out:         cmd.OutOrStdout(),
+		Err:         cmd.ErrOrStderr(),
+		ValidateURL: validateURL,
+		Options: downloader.Options{
+			Location:    location,
+			Filter:      filter,
+			SkipNSFW:    viper.GetBool("skip-nsfw"),
+			NSFWOnly:    viper.GetBool("nsfw-only"),
+			MinScore:    viper.GetInt("min-score"),
+			DryRun:      viper.GetBool("dry-run"),
+			Concurrency: concurrency,
+			MaxBytes:    int64(maxSize) << 20,
+			Quiet:       viper.GetBool("quiet"),
+			Verbose:     viper.GetBool("verbose"),
+		},
+	}
+
+	ctx := cmd.Context()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dl.Start(ctx)
+
+	var fetchErr error
+	for _, subreddit := range parsed.subreddits {
+		if err := fetchSubreddit(ctx, client, dl, subreddit, parsed.sort, parsed.period, limit); err != nil {
+			if errors.Is(err, context.Canceled) {
+				fetchErr = err
+				break
+			}
+			dl.RecordFailure()
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+		}
+	}
+	stats := dl.Wait()
+
+	printSummary(cmd.OutOrStdout(), stats, dl.Options.DryRun)
+	if fetchErr != nil {
+		return fetchErr
+	}
+	if stats.Failed > 0 {
+		return fmt.Errorf("%d download(s) or request(s) failed", stats.Failed)
+	}
+	return nil
+}
+
+// fetchSubreddit pages through a listing until limit posts have been seen or
+// there are no more pages, submitting each post to the downloader. Listing
+// requests stay serial so they respect Reddit's rate limit.
+func fetchSubreddit(ctx context.Context, client *reddit.Client, dl *downloader.Downloader, subreddit, sort, period string, limit int) error {
 	remaining := limit
 	after := ""
-
 	for remaining > 0 {
-		pageLimit := remaining
-		if pageLimit > 100 {
-			pageLimit = 100
-		}
-
-		responseObject, err := fetchTopPage(ctx, subreddit, timesort, after, pageLimit)
+		listing, err := client.Listing(ctx, subreddit, reddit.ListingOptions{
+			Sort:  sort,
+			Time:  period,
+			After: after,
+			Limit: min(remaining, reddit.MaxPageSize),
+		})
 		if err != nil {
 			return err
 		}
 
-		posts := responseObject.Data.Post
+		posts := listing.Data.Children
 		if len(posts) == 0 {
 			return nil
 		}
-
 		for _, post := range posts {
-			candidates := extractCandidateImageURLs(post)
-			if len(candidates) == 0 {
-				continue
-			}
-
-			filteredCandidates := filterCandidates(candidates, filter)
-			if len(filteredCandidates) == 0 {
-				continue
-			}
-
-			urls := make([]string, 0, len(filteredCandidates))
-			for _, candidate := range filteredCandidates {
-				urls = append(urls, candidate.URL)
-			}
-			fmt.Println(post.Data.Title + " => " + strings.Join(urls, ", "))
-			for i, candidate := range filteredCandidates {
-				name := post.Data.Title
-				if i > 0 {
-					name = fmt.Sprintf("%s_%d", post.Data.Title, i+1)
-				}
-				if err := downloadFromURL(ctx, candidate.URL, name, location); err != nil {
-					fmt.Println("skipping download:", err)
-				}
+			if err := dl.Submit(ctx, post.Data); err != nil {
+				return err
 			}
 		}
 
 		remaining -= len(posts)
-		if responseObject.Data.After == "" {
-			break
+		if listing.Data.After == "" {
+			return nil
 		}
-		after = responseObject.Data.After
+		after = listing.Data.After
 	}
-
 	return nil
 }
 
-func fetchTopPage(ctx context.Context, subreddit string, timesort string, after string, limit int) (models.Response, error) {
-	var responseObject models.Response
-
-	requestURL := fmt.Sprintf("%s/%s/top.json?t=%s&limit=%d", redditURL, subreddit, timesort, limit)
-	if after != "" {
-		requestURL += "&after=" + url.QueryEscape(after)
+func printSummary(w io.Writer, stats downloader.Stats, dryRun bool) {
+	if dryRun {
+		fmt.Fprintf(w, "Dry run: %d image(s) would be downloaded, %d failed.\n", stats.Planned, stats.Failed)
+		return
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL, nil)
-	if err != nil {
-		return responseObject, err
-	}
-
-	req.Header.Set("User-agent", "snoo-dl/0.1")
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return responseObject, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return responseObject, fmt.Errorf("reddit request failed with status %s", resp.Status)
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&responseObject); err != nil {
-		return responseObject, err
-	}
-
-	return responseObject, nil
-}
-
-func downloadFromURL(ctx context.Context, downloadURL string, title string, location string) error {
-	fileExt := imageExtension(downloadURL)
-	fileName := fmt.Sprintf("%s%s", sanitizeFilename(title), fileExt)
-	fmt.Println("Downloading", downloadURL, "to", fileName)
-
-	if location == "" {
-		location = defaultLocation
-	}
-
-	if err := os.MkdirAll(location, os.ModePerm); err != nil {
-		return err
-	}
-
-	path := filepath.Join(location, fileName)
-	if _, err := os.Stat(path); err == nil {
-		fmt.Println("File already exists, skipping:", path)
-		return nil
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
-	if err != nil {
-		return err
-	}
-
-	response, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("error while downloading %s - %w", downloadURL, err)
-	}
-	defer response.Body.Close()
-
-	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed with status %s", response.Status)
-	}
-
-	output, err := os.Create(path)
-	if err != nil {
-		return fmt.Errorf("error while creating %s - %w", fileName, err)
-	}
-	defer output.Close()
-
-	n, err := io.Copy(output, response.Body)
-	if err != nil {
-		return fmt.Errorf("error while downloading %s - %w", downloadURL, err)
-	}
-	fmt.Println(n, "bytes downloaded.")
-
-	return nil
-}
-
-func extractCandidateImageURLs(post models.Post) []imageCandidate {
-	candidates := make([]imageCandidate, 0, 4)
-
-	previewWidth, previewHeight := 0, 0
-	if len(post.Data.Preview.Images) > 0 {
-		previewWidth = post.Data.Preview.Images[0].Source.Width
-		previewHeight = post.Data.Preview.Images[0].Source.Height
-	}
-
-	add := func(rawURL string, width int, height int) {
-		unescaped := html.UnescapeString(strings.TrimSpace(rawURL))
-		if unescaped == "" || !hasSupportedImageExtension(unescaped) {
-			return
-		}
-		candidates = append(candidates, imageCandidate{
-			URL:    unescaped,
-			Width:  width,
-			Height: height,
-		})
-	}
-
-	add(post.Data.URLOverriddenByDest, previewWidth, previewHeight)
-	add(post.Data.Url, previewWidth, previewHeight)
-
-	if post.Data.IsGallery {
-		for _, item := range post.Data.GalleryData.Items {
-			if meta, ok := post.Data.MediaMetadata[item.MediaID]; ok {
-				add(meta.S.U, meta.S.X, meta.S.Y)
-			}
-		}
-	}
-
-	return uniqueCandidates(candidates)
-}
-
-func parsePairValue(raw string, separator string, fieldName string) (int, int, error) {
-	sanitized := strings.ReplaceAll(raw, " ", "")
-	parts := strings.Split(sanitized, separator)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("invalid %s format: expected width%sheight", fieldName, separator)
-	}
-
-	left, err := strconv.Atoi(parts[0])
-	if err != nil || left <= 0 {
-		return 0, 0, fmt.Errorf("invalid %s width value", fieldName)
-	}
-
-	right, err := strconv.Atoi(parts[1])
-	if err != nil || right <= 0 {
-		return 0, 0, fmt.Errorf("invalid %s height value", fieldName)
-	}
-
-	return left, right, nil
-}
-
-func isValidTopPeriod(value string) bool {
-	_, ok := validTopPeriods[strings.ToLower(value)]
-	return ok
-}
-
-func hasSupportedImageExtension(rawURL string) bool {
-	ext := imageExtension(rawURL)
-	_, ok := supportedImageExtensions[ext]
-	return ok
-}
-
-func imageExtension(rawURL string) string {
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-
-	ext := strings.ToLower(path.Ext(parsedURL.Path))
-	if _, ok := supportedImageExtensions[ext]; ok {
-		return ext
-	}
-
-	queryFormat := strings.ToLower(parsedURL.Query().Get("format"))
-	if queryFormat != "" {
-		if !strings.HasPrefix(queryFormat, ".") {
-			queryFormat = "." + queryFormat
-		}
-		if _, ok := supportedImageExtensions[queryFormat]; ok {
-			return queryFormat
-		}
-	}
-
-	return ""
-}
-
-func sanitizeFilename(name string) string {
-	if name == "" {
-		return "reddit_image"
-	}
-
-	var b strings.Builder
-	b.Grow(len(name))
-	for _, r := range name {
-		switch {
-		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '.':
-			b.WriteRune(r)
-		case unicode.IsSpace(r):
-			b.WriteRune('_')
-		default:
-			b.WriteRune('_')
-		}
-	}
-
-	clean := strings.Trim(b.String(), "._")
-	if clean == "" {
-		return "reddit_image"
-	}
-
-	return clean
-}
-
-func filterCandidates(candidates []imageCandidate, filter models.Filter) []imageCandidate {
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	out := make([]imageCandidate, 0, len(candidates))
-	for _, candidate := range candidates {
-		if !matchesFilter(candidate, filter) {
-			continue
-		}
-		out = append(out, candidate)
-	}
-
-	return out
-}
-
-func matchesFilter(candidate imageCandidate, filter models.Filter) bool {
-	if (models.Filter{}) == filter {
-		return true
-	}
-
-	if candidate.Width <= 0 || candidate.Height <= 0 {
-		return false
-	}
-
-	hasResolutionFilter := filter.ResolutionWidth > 0 && filter.ResolutionHeight > 0
-	hasAspectRatioFilter := filter.AspectRatioWidth > 0 && filter.AspectRatioHeight > 0
-
-	resolutionMatch := !hasResolutionFilter || (candidate.Height == filter.ResolutionHeight && candidate.Width == filter.ResolutionWidth)
-	aspectRatioMatch := !hasAspectRatioFilter || (candidate.Width*filter.AspectRatioHeight == candidate.Height*filter.AspectRatioWidth)
-
-	return resolutionMatch && aspectRatioMatch
-}
-
-func uniqueCandidates(values []imageCandidate) []imageCandidate {
-	if len(values) == 0 {
-		return nil
-	}
-
-	out := make([]imageCandidate, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if _, ok := seen[value.URL]; ok {
-			continue
-		}
-		seen[value.URL] = struct{}{}
-		out = append(out, value)
-	}
-
-	return out
+	fmt.Fprintf(w, "Done: %d downloaded (%s), %d already existed, %d failed.\n",
+		stats.Downloaded, downloader.FormatBytes(stats.Bytes), stats.Existing, stats.Failed)
 }

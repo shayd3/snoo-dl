@@ -1,0 +1,7 @@
+version: "2"
+
+linters:
+  exclusions:
+    # Don't require checking errors from fmt.Fprint* and deferred Close calls.
+    presets:
+      - std-error-handling

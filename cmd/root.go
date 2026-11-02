@@ -1,56 +1,84 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
-
 	"github.com/spf13/viper"
 )
 
 var cfgFile string
 
 // rootCmd represents the base command when called without any subcommands.
-// will print out the 'help' section
 var rootCmd = &cobra.Command{
 	Use:   "snoo-dl",
-	Short: "Snoo-dl grabs all images from a subreddit and downloads them!",
-	Long: `Snoo-dl is a CLI library that grabs all images from a
-	specified subreddit and downloads them to a specified location.`,
+	Short: "Snoo-dl grabs images from a subreddit and downloads them!",
+	Long: `Snoo-dl is a CLI that grabs images from one or more subreddits and
+downloads them to a local folder.
+
+Every download flag can also be set in the config file
+($HOME/.snoodl.yaml by default) or with an environment variable
+prefixed with SNOODL_, e.g. SNOODL_LOCATION=~/Pictures.`,
+	SilenceUsage: true,
+	PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		return initConfig()
+	},
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
+// Execute runs the root command. Ctrl-C cancels in-flight requests, and the
+// process exits non-zero on any error.
 func Execute() {
-	cobra.CheckErr(rootCmd.Execute())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	err := rootCmd.ExecuteContext(ctx)
+	stop()
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			fmt.Fprintln(os.Stderr, "Interrupted.")
+			os.Exit(130)
+		}
+		os.Exit(1)
+	}
 }
 
 func init() {
-	cobra.OnInitialize(initConfig)
-
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.snoodl.yaml)")
 }
 
-// initConfig reads in config file and ENV variables if set.
-func initConfig() {
+// initConfig reads the config file and SNOODL_* environment variables.
+func initConfig() error {
+	viper.SetEnvPrefix("SNOODL")
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	viper.AutomaticEnv()
+
 	if cfgFile != "" {
-		// Use config file from the flag.
 		viper.SetConfigFile(cfgFile)
-	} else {
-		// Find home directory.
-		home, err := os.UserHomeDir()
-		cobra.CheckErr(err)
-
-		// Search config in home directory with name ".snoodl" (without extension).
-		viper.AddConfigPath(home)
-		viper.SetConfigType("yaml")
-		viper.SetConfigName(".snoodl")
+		if err := viper.ReadInConfig(); err != nil {
+			return fmt.Errorf("reading config file %s: %w", cfgFile, err)
+		}
+		return nil
 	}
 
-	viper.AutomaticEnv() // read in environment variables that match
-
-	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
+	home, err := os.UserHomeDir()
+	if err != nil {
+		// No home directory: run with flags and env vars only.
+		return nil
 	}
+	viper.AddConfigPath(home)
+	viper.SetConfigType("yaml")
+	viper.SetConfigName(".snoodl")
+
+	if err := viper.ReadInConfig(); err != nil {
+		var notFound viper.ConfigFileNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("reading config file: %w", err)
+	}
+	return nil
 }
