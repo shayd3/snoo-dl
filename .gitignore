@@ -19,3 +19,10 @@
 .gomodcache/
 .gopath/
 .DS_Store
+
+# Build output
+/snoo-dl
+/dist/
+
+# Editor settings
+.vscode/
